@@ -71,7 +71,7 @@ class ParticleFilter(Node):
     """
     def __init__(self):
         super().__init__('pf')
-        self.base_frame = "base_footprint"   # the frame of the robot base
+        self.base_frame = "base_link"   # the frame of the robot base
         self.map_frame = "map"          # the name of the map coordinate frame
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
@@ -82,6 +82,9 @@ class ParticleFilter(Node):
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
+        # gaussian distribution parameters
+        self.mu = 0.0                   # mean
+        self.sigma = 0.4                # standard deviation
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -246,15 +249,33 @@ class ParticleFilter(Node):
         if xy_theta is None:
             xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         self.particle_cloud = []
+
         # TODO create particles
+        for particle in range(self.n_particles):
+            x = xy_theta[0] + np.random.normal(self.mu, self.sigma)
+            y = xy_theta[1] + np.random.normal(self.mu, self.sigma)
+            theta = xy_theta[2] + np.random.normal(self.mu, self.sigma)
+            self.particle_cloud.append(Particle(x=x, y=y, theta=theta, w=1.0))
+
+        print(self.particle_cloud)
 
         self.normalize_particles()
         self.update_robot_pose()
 
+
     def normalize_particles(self):
-        """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0) """
+        """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0)"""
         # TODO: implement this
-        pass
+        total = sum(particle.w for particle in self.particle_cloud)
+        if total == 0:
+            for particle in self.particle_cloud:
+                particle.w = 1.0 / self.n_particles
+            for particle in self.particle_cloud:
+                particle.w = particle.w / total
+        total_new = sum(particle.w for particle in self.particle_cloud)
+
+        print(total_new)
+
 
     def publish_particles(self, timestamp):
         msg = ParticleCloud()
