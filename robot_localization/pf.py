@@ -188,13 +188,24 @@ class ParticleFilter(Node):
         self.normalize_particles()
 
         # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
-        # just to get started we will fix the robot's pose to always be at the origin
-        self.robot_pose = Pose()
+        if not self.particle_cloud:
+            return
+
+        mean_x = sum(p.w * p.x for p in self.particle_cloud)
+        mean_y = sum(p.w * p.y for p in self.particle_cloud)
+        mean_sin = sum(p.w * math.sin(p.theta) for p in self.particle_cloud)
+        mean_cos = sum(p.w * math.cos(p.theta) for p in self.particle_cloud)
+        mean_theta = math.atan2(mean_sin, mean_cos)
+
+        mean_particle = Particle(x=mean_x, y=mean_y, theta=mean_theta)
+        self.robot_pose = mean_particle.as_pose()
+
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                             self.odom_pose)
         else:
             self.get_logger().warn("Can't set map->odom transform since no odom data received")
+
 
     def update_particles_with_odom(self):
         """ Update the particles using the newly given odometry pose.
@@ -215,7 +226,7 @@ class ParticleFilter(Node):
             self.current_odom_xy_theta = new_odom_xy_theta
             return
 
-        # TODO: modify particles using delta
+        # TODO: modify particles using delta                
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
