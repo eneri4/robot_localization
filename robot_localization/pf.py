@@ -82,9 +82,13 @@ class ParticleFilter(Node):
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
-        # gaussian distribution parameters
+        # gaussian distribution parameters for casting particles
         self.mu = 0.0                   # mean
-        self.sigma = 0.4                # standard deviation
+        self.sigma = 0.5                # standard deviation
+
+        # gaussian distribution parameters for updating particles based on odometry
+        self.mu = 0.03                  # mean
+        self.sigma = 0.03               # standard deviation
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -226,7 +230,26 @@ class ParticleFilter(Node):
             self.current_odom_xy_theta = new_odom_xy_theta
             return
 
-        # TODO: modify particles using delta                
+        dtheta = math.atan2(math.sin(delta[2]), math.cos(delta[2]))
+
+        # TODO: modify particles using delta
+        for p in self.particle_cloud: 
+
+            theta = p.theta - old_odom_xy_theta[2]
+            # inverse tan for theta changes
+
+            # rotation matrix for x and y changes
+            dx = delta[0]*math.cos(theta) - delta[1]*math.sin(theta)
+            dy = delta[0]*math.sin(theta) + delta[1]*math.cos(theta)
+
+            p.x += dx + np.random.normal(self.mu, self.sigma)
+            p.y += dy + np.random.normal(self.mu, self.sigma)
+            p.theta += dtheta + np.random.normal(self.mu, self.sigma)
+            if p.theta >= math.pi:
+                p.theta -= 2*math.pi
+            elif p.theta <= -1*math.pi:
+                p.theta += 2*math.pi
+
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
@@ -281,6 +304,7 @@ class ParticleFilter(Node):
         if total == 0:
             for particle in self.particle_cloud:
                 particle.w = 1.0 / self.n_particles
+        elif total != 0:
             for particle in self.particle_cloud:
                 particle.w = particle.w / total
         total_new = sum(particle.w for particle in self.particle_cloud)
