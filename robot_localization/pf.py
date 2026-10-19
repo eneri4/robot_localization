@@ -16,7 +16,7 @@ import math
 import time
 import numpy as np
 from occupancy_field import OccupancyField
-from helper_functions import TFHelper
+from helper_functions import TFHelper, draw_random_sample
 from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
 
@@ -82,13 +82,16 @@ class ParticleFilter(Node):
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
-        # gaussian distribution parameters for casting particles
-        self.mu = 0.0                   # mean
-        self.sigma = 0.5                # standard deviation
+        # gaussian params for casting particles
+        self.initial_mu = 0.0                   # mean
+        self.initial_sigma = 0.5                # standard deviation
 
-        # gaussian distribution parameters for updating particles based on odometry
-        self.mu = 0.03                  # mean
-        self.sigma = 0.03               # standard deviation
+        # noise params for updating particles using odometry
+        self.odom_mu = 0.0                   # mean
+        self.odom_sigma = 0.03               # standard deviation
+
+        # noise params for resampling
+        self.laser_sigma = 0.25               # standard deviation
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -175,6 +178,9 @@ class ParticleFilter(Node):
             self.resample_particles()               # resample particles to focus on areas of high density
         # publish particles (so things like rviz can see them)
         self.publish_particles(msg.header.stamp)
+        
+        self.pub_latest_transform()
+
 
     def moved_far_enough_to_update(self, new_odom_xy_theta):
         return math.fabs(new_odom_xy_theta[0] - self.current_odom_xy_theta[0]) > self.d_thresh or \
@@ -242,9 +248,9 @@ class ParticleFilter(Node):
             dx = delta[0]*math.cos(theta) - delta[1]*math.sin(theta)
             dy = delta[0]*math.sin(theta) + delta[1]*math.cos(theta)
 
-            p.x += dx + np.random.normal(self.mu, self.sigma)
-            p.y += dy + np.random.normal(self.mu, self.sigma)
-            p.theta += dtheta + np.random.normal(self.mu, self.sigma)
+            p.x += dx + np.random.normal(self.odom_mu, self.odom_sigma)
+            p.y += dy + np.random.normal(self.odom_mu, self.odom_sigma)
+            p.theta += dtheta + np.random.normal(self.odom_mu, self.odom_sigma)
             if p.theta >= math.pi:
                 p.theta -= 2*math.pi
             elif p.theta <= -1*math.pi:
@@ -259,15 +265,52 @@ class ParticleFilter(Node):
         """
         # make sure the distribution is normalized
         self.normalize_particles()
+
         # TODO: fill out the rest of the implementation
+        old_particle_cloud = self.particle_cloud
+        probabilities = [p.w for p in self.particle_cloud]
+        print(sum(probabilities), any(math.isnan(w) for w in probabilities), min(probabilities))
+        self.particle_cloud = draw_random_sample(old_particle_cloud, probabilities, self.n_particles)
+
 
     def update_particles_with_laser(self, r, theta):
         """ Updates the particle weights in response to the scan data
-            r: the distance readings to obstacles
-            theta: the angle relative to the robot frame for each corresponding reading 
-        """
-        # TODO: implement this
-        pass
+           r: the distance readings to obstacles
+           theta: the angle relative to the robot frame for each corresponding reading
+       """
+       # TODO: implement this
+
+        log_scores = np.zeros(len(self.particle_cloud))
+
+        for idx, p in enumerate(self.particle_cloud):
+            score = 0.0
+            for i in range(0, len(r), 10):
+                if not math.isfinite(r[i]):
+                    continue
+
+                # project this beam into the map frame from the particle's pose
+                beam_angle = p.theta + theta[i]
+                point_x = p.x + r[i] * math.cos(beam_angle)
+                point_y = p.y + r[i] * math.sin(beam_angle)
+
+                distance = self.occupancy_field.get_closest_obstacle_distance(point_x, point_y)
+                
+                if not math.isfinite(distance):
+                    distance = 1.0   # beam landed off the map: penalize it
+
+                # sum of log-likelihoods (same as multiplying the likelihoods)
+                score += -(distance ** 2) / (2 * self.laser_sigma ** 2)
+
+            log_scores[idx] = score
+
+        # subtract the max before exp so the numbers don't underflow to 0
+        weights = np.exp(log_scores - np.max(log_scores))
+        for idx, p in enumerate(self.particle_cloud):
+            p.w = weights[idx]
+
+        self.normalize_particles()
+
+
 
     def update_initial_pose(self, msg):
         """ Callback function to handle re-initializing the particle filter based on a pose estimate.
@@ -286,9 +329,9 @@ class ParticleFilter(Node):
 
         # TODO create particles
         for particle in range(self.n_particles):
-            x = xy_theta[0] + np.random.normal(self.mu, self.sigma)
-            y = xy_theta[1] + np.random.normal(self.mu, self.sigma)
-            theta = xy_theta[2] + np.random.normal(self.mu, self.sigma)
+            x = xy_theta[0] + np.random.normal(self.initial_mu, self.initial_sigma)
+            y = xy_theta[1] + np.random.normal(self.initial_mu, self.initial_sigma)
+            theta = xy_theta[2] + np.random.normal(self.initial_mu, self.initial_sigma)
             self.particle_cloud.append(Particle(x=x, y=y, theta=theta, w=1.0))
 
         print(self.particle_cloud)
@@ -300,6 +343,8 @@ class ParticleFilter(Node):
     def normalize_particles(self):
         """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0)"""
         # TODO: implement this
+        if len(self.particle_cloud) == 0:
+            return
         total = sum(particle.w for particle in self.particle_cloud)
         if total == 0:
             for particle in self.particle_cloud:
