@@ -76,22 +76,23 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 300          # the number of particles to use
+        self.n_particles = 1000          # the number of particles to use
 
         self.d_thresh = 0.2             # the amount of linear movement before performing an update
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
-        # gaussian params for casting particles
-        self.initial_mu = 0.0                   # mean
-        self.initial_sigma = 0.5                # standard deviation
 
         # noise params for updating particles using odometry
-        self.odom_mu = 0.0                   # mean
-        self.odom_sigma = 0.03               # standard deviation
+        self.odom_mu = 0.0                 # mean
+        self.odom_xy_sigma = 0.05          # x, y sd 
+        self.odom_theta_sigma = 0.03       # theta sd, smaller bc heading affects guess more
 
-        # noise params for resampling
-        self.laser_sigma = 0.25               # standard deviation
+        # scoring adjustment params
+        self.laser_sigma = 0.5              # sd of score bell curve, larger to flatten scores    
+
+        # random injection of particles for resampling
+        self.random_inject = 750             # 75% of particles resampled by frequency
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -201,15 +202,18 @@ class ParticleFilter(Node):
         if not self.particle_cloud:
             return
 
+        # compute weighted mean
         mean_x = sum(p.w * p.x for p in self.particle_cloud)
         mean_y = sum(p.w * p.y for p in self.particle_cloud)
         mean_sin = sum(p.w * math.sin(p.theta) for p in self.particle_cloud)
         mean_cos = sum(p.w * math.cos(p.theta) for p in self.particle_cloud)
+        # arctan to wrap around angles (range is -pi to pi)
         mean_theta = math.atan2(mean_sin, mean_cos)
 
         mean_particle = Particle(x=mean_x, y=mean_y, theta=mean_theta)
         self.robot_pose = mean_particle.as_pose()
 
+        # transform guess from map to odom frame
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                             self.odom_pose)
@@ -236,21 +240,23 @@ class ParticleFilter(Node):
             self.current_odom_xy_theta = new_odom_xy_theta
             return
 
+        # inverse tan for change in theta
         dtheta = math.atan2(math.sin(delta[2]), math.cos(delta[2]))
 
         # TODO: modify particles using delta
         for p in self.particle_cloud: 
 
             theta = p.theta - old_odom_xy_theta[2]
-            # inverse tan for theta changes
 
             # rotation matrix for x and y changes
             dx = delta[0]*math.cos(theta) - delta[1]*math.sin(theta)
             dy = delta[0]*math.sin(theta) + delta[1]*math.cos(theta)
-
-            p.x += dx + np.random.normal(self.odom_mu, self.odom_sigma)
-            p.y += dy + np.random.normal(self.odom_mu, self.odom_sigma)
-            p.theta += dtheta + np.random.normal(self.odom_mu, self.odom_sigma)
+            # add noise to particle positions
+            # reduces early convergence
+            p.x += dx + np.random.normal(self.odom_mu, self.odom_xy_sigma)
+            p.y += dy + np.random.normal(self.odom_mu, self.odom_xy_sigma)
+            p.theta += dtheta + np.random.normal(self.odom_mu, self.odom_theta_sigma)
+            # wrap around angles (range is -pi to pi)
             if p.theta >= math.pi:
                 p.theta -= 2*math.pi
             elif p.theta <= -1*math.pi:
@@ -269,8 +275,20 @@ class ParticleFilter(Node):
         # TODO: fill out the rest of the implementation
         old_particle_cloud = self.particle_cloud
         probabilities = [p.w for p in self.particle_cloud]
-        print(sum(probabilities), any(math.isnan(w) for w in probabilities), min(probabilities))
-        self.particle_cloud = draw_random_sample(old_particle_cloud, probabilities, self.n_particles)
+        self.particle_cloud = draw_random_sample(old_particle_cloud, probabilities, self.n_particles - self.random_inject)
+        
+        # inject random particles so the filter can recover if the cloud locks onto a wrong spot
+        ((x_low, x_up), (y_low, y_up)) = self.occupancy_field.get_obstacle_bounding_box()
+        for _ in range(self.random_inject):
+            x = np.random.uniform(x_low, x_up)
+            y = np.random.uniform(y_low, y_up)
+            theta = np.random.uniform(-math.pi, math.pi)
+            self.particle_cloud.append(Particle(x=x, y=y, theta=theta, w=1.0/self.n_particles))
+
+        # track distinct particles to ensure cloud doesn't collapse
+        print(len(set((round(p.x, 3), round(p.y, 3), round(p.theta, 3)) for p in self.particle_cloud)))
+        n_eff = 1.0 / sum(w * w for w in probabilities)
+        print("effective particles:", n_eff)
 
 
     def update_particles_with_laser(self, r, theta):
@@ -288,7 +306,7 @@ class ParticleFilter(Node):
                 if not math.isfinite(r[i]):
                     continue
 
-                # project this beam into the map frame from the particle's pose
+                # project beam into map frame from particle's pose
                 beam_angle = p.theta + theta[i]
                 point_x = p.x + r[i] * math.cos(beam_angle)
                 point_y = p.y + r[i] * math.sin(beam_angle)
@@ -296,14 +314,14 @@ class ParticleFilter(Node):
                 distance = self.occupancy_field.get_closest_obstacle_distance(point_x, point_y)
                 
                 if not math.isfinite(distance):
-                    distance = 1.0   # beam landed off the map: penalize it
+                    distance = 1.0   # beam landed off map --> penalize
 
-                # sum of log-likelihoods (same as multiplying the likelihoods)
+                # sum of log-likelihoods 
                 score += -(distance ** 2) / (2 * self.laser_sigma ** 2)
 
             log_scores[idx] = score
 
-        # subtract the max before exp so the numbers don't underflow to 0
+        # subtract max before exp so numbers don't underflow to 0
         weights = np.exp(log_scores - np.max(log_scores))
         for idx, p in enumerate(self.particle_cloud):
             p.w = weights[idx]
@@ -328,15 +346,20 @@ class ParticleFilter(Node):
         self.particle_cloud = []
 
         # TODO create particles
+        # get bounding box of map
+        ((x_low, x_up), (y_low, y_up)) = self.occupancy_field.get_obstacle_bounding_box()
+
+        # cast particles based on random uniform distribution within bounding box
         for particle in range(self.n_particles):
-            x = xy_theta[0] + np.random.normal(self.initial_mu, self.initial_sigma)
-            y = xy_theta[1] + np.random.normal(self.initial_mu, self.initial_sigma)
-            theta = xy_theta[2] + np.random.normal(self.initial_mu, self.initial_sigma)
+            x = np.random.uniform(x_low, x_up) 
+            y = np.random.uniform(y_low, y_up)
+            theta = np.random.uniform(-1*math.pi, math.pi)
+            # add to particle cloud
             self.particle_cloud.append(Particle(x=x, y=y, theta=theta, w=1.0))
 
-        print(self.particle_cloud)
-
+        # set particle weights (=1/300)
         self.normalize_particles()
+        # check if robot moved
         self.update_robot_pose()
 
 
@@ -346,10 +369,12 @@ class ParticleFilter(Node):
         if len(self.particle_cloud) == 0:
             return
         total = sum(particle.w for particle in self.particle_cloud)
+        # uniform distribution of weights if none
         if total == 0:
             for particle in self.particle_cloud:
                 particle.w = 1.0 / self.n_particles
-        elif total != 0:
+        # weights sum to 1
+        else:
             for particle in self.particle_cloud:
                 particle.w = particle.w / total
         total_new = sum(particle.w for particle in self.particle_cloud)
