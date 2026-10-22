@@ -279,6 +279,7 @@ class ParticleFilter(Node):
         
         # inject random particles so the filter can recover if the cloud locks onto a wrong spot
         ((x_low, x_up), (y_low, y_up)) = self.occupancy_field.get_obstacle_bounding_box()
+
         for _ in range(self.random_inject):
             x = np.random.uniform(x_low, x_up)
             y = np.random.uniform(y_low, y_up)
@@ -302,7 +303,7 @@ class ParticleFilter(Node):
 
         for idx, p in enumerate(self.particle_cloud):
             score = 0.0
-            for i in range(0, len(r), 10):
+            for i in range(0, len(r), 5):
                 if not math.isfinite(r[i]):
                     continue
 
@@ -314,7 +315,7 @@ class ParticleFilter(Node):
                 distance = self.occupancy_field.get_closest_obstacle_distance(point_x, point_y)
                 
                 if not math.isfinite(distance):
-                    distance = 1.0   # beam landed off map --> penalize
+                    continue # beam landed off map --> penalize
 
                 # sum of log-likelihoods 
                 score += -(distance ** 2) / (2 * self.laser_sigma ** 2)
