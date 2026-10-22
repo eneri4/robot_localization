@@ -89,8 +89,7 @@ Bag files were taken as we changed parameters incrementally to replay and observ
 
 Below is a GIF of our final functional particle filter:
 
-![Figure 2: Particle filter demo](../media/75inject.gif)
-
+![Figure 2: Particle filter demo](https://raw.githubusercontent.com/eneri4/robot_localization/main/media/75inject.gif)
 *Figure 2: A demo of our functioning particle filter.*
 
 ## Challenges
