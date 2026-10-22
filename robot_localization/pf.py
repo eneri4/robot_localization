@@ -315,7 +315,7 @@ class ParticleFilter(Node):
                 distance = self.occupancy_field.get_closest_obstacle_distance(point_x, point_y)
                 
                 if not math.isfinite(distance):
-                    continue # beam landed off map --> penalize
+                    distance = 1.0 # beam landed off map --> penalize
 
                 # sum of log-likelihoods 
                 score += -(distance ** 2) / (2 * self.laser_sigma ** 2)
@@ -353,7 +353,7 @@ class ParticleFilter(Node):
             ((x_low, x_up), (y_low, y_up)) = box
         else:
             x_low, x_up, y_low, y_up = -5.0, 5.0, -5.0, 5.0 # safe default bounds for tests
-            
+
         # cast particles based on random uniform distribution within bounding box
         for particle in range(self.n_particles):
             x = np.random.uniform(x_low, x_up) 
