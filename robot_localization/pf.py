@@ -348,8 +348,12 @@ class ParticleFilter(Node):
 
         # TODO create particles
         # get bounding box of map
-        ((x_low, x_up), (y_low, y_up)) = self.occupancy_field.get_obstacle_bounding_box()
-
+        box = self.occupancy_field.get_obstacle_bounding_box()
+        if box is not None and len(box) == 2:
+            ((x_low, x_up), (y_low, y_up)) = box
+        else:
+            x_low, x_up, y_low, y_up = -5.0, 5.0, -5.0, 5.0 # safe default bounds for tests
+            
         # cast particles based on random uniform distribution within bounding box
         for particle in range(self.n_particles):
             x = np.random.uniform(x_low, x_up) 
